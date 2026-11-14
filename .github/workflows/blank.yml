@@ -1,0 +1,77 @@
+name: HTNodes
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Every 6 hours
+  workflow_dispatch:
+
+jobs:
+  HTNodes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set hostname to HTNodes
+        run: sudo hostnamectl set-hostname HTNodes
+
+      - name: Install prerequisites
+        run: |
+          sudo apt update
+          sudo apt install -y curl unzip sudo net-tools neofetch
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Start Tailscale
+        run: |
+          sudo tailscaled &
+          sleep 8
+          sudo tailscale up --authkey ${{ secrets.TAILSCALE_AUTHKEY }} --hostname=HTNodes || echo "Tailscale already up"
+
+      - name: Create user HTNodes with sudo
+        run: |
+          if ! id -u HTNodes >/dev/null 2>&1; then
+            sudo useradd -m -s /bin/bash HTNodes
+            echo "HTNodes:HTNodes" | sudo chpasswd
+            sudo usermod -aG sudo HTNodes
+            echo "HTNodes ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/HTNodes
+          fi
+
+      - name: Start SSHX session and keep alive
+        run: |
+          set -x
+          echo "💻 Connect via SSHX or Tailscale:"
+          TS_IP=$(tailscale ip -4 2>/dev/null | head -n 1)
+          if [ -n "$TS_IP" ]; then
+            echo "🔑 Tailscale IP: $TS_IP"
+            echo "👉 ssh HTNodes@$TS_IP"
+            echo "Password: HTNodes"
+          else
+            echo "⚠ No Tailscale IP found."
+          fi
+
+          echo "✅ Starting SSHX..."
+          curl -sSf https://sshx.io/get | sh -s run &
+          SSHX_PID=$!
+
+          echo "✅ SSHX started. Keeping alive for 5h 50m..."
+          SECONDS_LEFT=$((350 * 60))
+          while [ $SECONDS_LEFT -gt 0 ]; do
+            if ps -p $SSHX_PID > /dev/null; then
+              echo "SSHX alive | Time left: $((SECONDS_LEFT / 60)) mins"
+            else
+              echo "⚠ SSHX exited early."
+              break
+            fi
+            sleep 60
+            SECONDS_LEFT=$((SECONDS_LEFT - 60))
+          done
+
+          echo "⏰ Time is up! Killing SSHX if still running..."
+          kill $SSHX_PID || echo "SSHX already stopped."
+          wait $SSHX_PID || true
+          set +x
